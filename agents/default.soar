@@ -1,0 +1,68 @@
+# Example agent for the Soar-WPILib bridge. See docs/io-mapping.md.
+#
+# Behaviour while enabled (autonomous or teleop):
+#   - holding a piece           -> shoot
+#   - no piece, target in view  -> drive at the target with the intake running
+# Commands are removed from the output-link once the bridge marks them
+# ^status complete (or error), which lets the next one be issued.
+
+# Remove every command the bridge has finished with, in one decision.
+# (Several commands can finish at once; "=" keeps that from being a tie.)
+sp {robot*propose*clear-commands
+   (state <s> ^superstate nil ^io.output-link <ol>)
+   (<ol> ^<name> <cmd>)
+   (<cmd> ^status)
+-->
+   (<s> ^operator <o> + > =)
+   (<o> ^name clear-commands)}
+
+sp {robot*apply*clear-commands
+   (state <s> ^operator.name clear-commands ^io.output-link <ol>)
+   (<ol> ^<name> <cmd>)
+   (<cmd> ^status)
+-->
+   (<ol> ^<name> <cmd> -)}
+
+# Chase the vision target.
+sp {robot*propose*chase
+   (state <s> ^superstate nil ^io <io>)
+   (<io> ^input-link <il> ^output-link <ol>)
+   (<il> ^match.mode << autonomous teleop >>
+         ^vision.target-detected true
+         ^intake.has-piece false)
+  -(<ol> ^move)
+-->
+   (<s> ^operator <o> + =)
+   (<o> ^name chase)}
+
+sp {robot*apply*chase
+   (state <s> ^operator.name chase ^io <io>)
+   (<io> ^input-link.vision.target-yaw <yaw> ^output-link <ol>)
+-->
+   (<ol> ^move <m> ^run-intake <r>)
+   (<m> ^vx 1.0 ^vy 0.0 ^omega (* -0.03 <yaw>))
+   (<r> ^speed 1.0)}
+
+# Shoot once a piece is held.
+sp {robot*propose*shoot
+   (state <s> ^superstate nil ^io <io>)
+   (<io> ^input-link <il> ^output-link <ol>)
+   (<il> ^match.mode << autonomous teleop >>
+         ^intake.has-piece true)
+  -(<ol> ^shoot)
+-->
+   (<s> ^operator <o> + =)
+   (<o> ^name shoot)}
+
+sp {robot*apply*shoot
+   (state <s> ^operator.name shoot ^io.output-link <ol>)
+-->
+   (<ol> ^shoot <c>)
+   (<c> ^execute true)}
+
+# Nothing to do: wait in the substate instead of stacking up impasses.
+sp {robot*propose*wait
+   (state <s> ^attribute state ^choices none -^operator.name wait)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name wait)}

@@ -1,0 +1,8 @@
+# Soar does not free the name strings of interned symbols when an agent is
+# destroyed (upstream behaviour, in Soar's own pool allocator). The amount is
+# fixed per kernel lifetime - about 900 bytes, one string per distinct symbol
+# name - and does not grow with decision cycles; the RSS check in
+# bridge_test's match simulation guards against growth. Everything allocated
+# outside Soar's pool allocator (the bridge, the SML client, the bindings) is
+# still checked.
+leak:Memory_Manager::allocate_memory

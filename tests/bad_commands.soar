@@ -1,0 +1,22 @@
+# Test agent: emits one unknown command, one command with a missing parameter,
+# and one valid command, once.
+sp {bad*propose*emit
+   (state <s> ^superstate nil -^emitted)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name emit)}
+
+sp {bad*apply*emit
+   (state <s> ^operator.name emit ^io.output-link <ol>)
+-->
+   (<s> ^emitted yes)
+   (<ol> ^warp-drive <w> ^move <m> ^set-elevator <e>)
+   (<w> ^factor 9.0)
+   (<m> ^vx 1.0)
+   (<e> ^height 0.5)}
+
+sp {bad*propose*wait
+   (state <s> ^attribute state ^choices none -^operator.name wait)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name wait)}
