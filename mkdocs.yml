@@ -1,0 +1,73 @@
+site_name: Soar-WPILib Hardware Bridge
+site_description: Run a Soar cognitive agent inside an FRC robot program, from C++, Java or Python.
+repo_url: https://github.com/Suave101/FRC-Soar
+edit_uri: edit/main/docs/
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+validation:
+  links:
+    not_found: warn
+    anchors: warn
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Building: getting-started/building.md
+      - Your first agent: getting-started/first-agent.md
+      - Deploying to the robot: getting-started/deploying.md
+  - Guide:
+      - How it works: guide/how-it-works.md
+      - Inputs by path: guide/inputs.md
+      - Commands: guide/commands.md
+      - The fixed schema: guide/fixed-schema.md
+      - Writing agents: guide/writing-agents.md
+      - Telemetry and debugging: guide/telemetry.md
+  - API reference:
+      - Configuration: api/configuration.md
+      - C++: api/cpp.md
+      - Java: api/java.md
+      - Python: api/python.md
+  - I/O mapping specification: io-mapping.md
+  - Troubleshooting: troubleshooting.md

@@ -15,6 +15,8 @@ There are two ways to describe the robot to the agent:
   generic layer; both can be mixed.
 
 The WME names and rules are specified in [docs/io-mapping.md](docs/io-mapping.md).
+Full documentation is in [docs/](docs/) and builds with MkDocs for Read the Docs
+(`.readthedocs.yaml`).
 
 ## How it works
 
