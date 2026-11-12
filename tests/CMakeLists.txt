@@ -10,7 +10,7 @@ if(NOT CMAKE_CROSSCOMPILING)
 
   if(TARGET soarbridge_py)
     add_test(NAME bridge_python
-      COMMAND ${Python3_EXECUTABLE} ${_tests}/test_python.py ${_agents})
+      COMMAND ${Python3_EXECUTABLE} ${_tests}/test_python.py ${_agents} ${_tests})
     set_tests_properties(bridge_python PROPERTIES
       ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:soarbridge_py>")
   endif()
@@ -25,6 +25,6 @@ if(NOT CMAKE_CROSSCOMPILING)
     # No java.library.path: the test must load the native library from the jar.
     add_test(NAME bridge_java
       COMMAND ${Java_JAVA_EXECUTABLE} -cp "${SOARBRIDGE_JAR}:${_test_classes}"
-              BridgeTest ${_agents})
+              BridgeTest ${_agents} ${_tests})
   endif()
 endif()

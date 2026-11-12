@@ -5,14 +5,23 @@ Robot state is written to the agent's input-link every loop; commands the agent
 puts on its output-link are delivered to your subsystems. Usable from C++, Java
 and Python (RobotPy).
 
-The WME names are specified in [docs/io-mapping.md](docs/io-mapping.md).
+There are two ways to describe the robot to the agent:
+
+- **Any robot (generic).** Set input-link values by path
+  (`SetBool("ground-intake.beam-break", true)`) and handle output-link commands
+  by name (`OnCommand("ground-intake", ...)`). No fixed schema.
+- **Fixed schema (typed).** A `RobotInputs` struct and five built-in commands
+  (`move`, `turn-to`, `set-elevator`, `run-intake`, `shoot`). Built on the
+  generic layer; both can be mixed.
+
+The WME names and rules are specified in [docs/io-mapping.md](docs/io-mapping.md).
 
 ## How it works
 
 ```
  robot thread (20 ms loop)                    Soar thread
  -------------------------                    -----------
- SetInputs(snapshot) ──► latest snapshot ──►  update input-link
+ SendInputs()        ──► changed values  ──►  update input-link
                                               run 1 decision cycle
  DispatchCommands() ◄─── command queue  ◄───  read output-link
         │
@@ -21,8 +30,9 @@ The WME names are specified in [docs/io-mapping.md](docs/io-mapping.md).
 
 - The Soar kernel and agent are created, run and destroyed on one background
   thread. Nothing else touches them.
-- The robot thread only copies a small struct in or swaps a vector out under a
-  mutex that is never held while Soar runs, so it cannot be blocked by the agent.
+- The robot thread only hands over the input values that changed this loop, or
+  swaps the command vector out, under a mutex that is never held while Soar
+  runs, so it cannot be blocked by the agent.
 - If the agent falls behind, newer inputs replace unread ones; the agent always
   sees the latest state and no backlog builds up.
 - `^status complete` is added after the robot code has actually executed the
@@ -93,6 +103,27 @@ else to deploy.
   Without them the Python module is skipped for that target.
 
 ## Usage
+
+### Any robot, by path and command name
+
+```java
+// robotInit
+soar.onCommand("ground-intake", c -> groundIntake.setState(c.getString("state")));
+
+// robotPeriodic
+soar.setBool("ground-intake.beam-break", !beamBreak.get());
+soar.setNumber("arm.angle", arm.getAngleDegrees());
+soar.sendInputs();
+// ... rest of the loop ...
+soar.dispatchCommands();
+```
+
+C++ (`SetBool`, `SendInputs`, `OnCommand`, `DispatchCommands()`) and Python
+(`set_bool`, `send_inputs`, `on_command`, `dispatch_commands()`) are the same.
+Commands whose names were never registered are refused with `^status error`.
+See [docs/io-mapping.md](docs/io-mapping.md) sections 1, 3 and 5.
+
+The examples below use the fixed schema.
 
 ### C++
 
@@ -203,18 +234,21 @@ class Robot(wpilib.TimedRobot, soarbridge.CommandHandler):
 | `agentName` / `agent_name` | `robot` | Soar agent name |
 | `decisionsPerInput` / `decisions_per_input` | 1 | Decision cycles per input snapshot |
 | `debuggerPort` / `debugger_port` | 0 | TCP port for attaching the Soar debugger; 0 = off |
-| `maxPendingCommands` / `max_pending_commands` | 256 | Undelivered commands kept before dropping the oldest |
+| `maxPendingCommands` / `max_pending_commands` | 256 | Undelivered commands kept before dropping the oldest (dropped ones get `^status error`) |
 | `realtimePriority` / `realtime_priority` | 0 | SCHED_FIFO priority for the Soar thread; 0 = normal scheduling |
 
 `GetStats()` reports counters and input-to-command latency (last, mean, max,
 and how many inputs exceeded 5 ms); publish these to the dashboard to watch the
-agent on the real robot.
+agent on the real robot. `GetLastWarning()` describes the latest refused input
+path, rejected or unhandled command, or constant left on the output-link.
 
 ## Writing agents
 
 - One decision cycle runs per robot loop by default, so an operator proposed
   from this loop's inputs has its commands delivered in this same loop.
 - Remove commands once they carry `^status`; see `agents/default.soar`.
+- Commands must be identifiers (`(<ol> ^grip <c>) (<c> ^state closed)`). A
+  constant such as `(<ol> ^grip closed)` cannot get a `^status` and is ignored.
 - Give operators that can be proposed several at once an indifferent (`=`)
   preference. A tie impasse with no rules to resolve it stalls the agent.
 - The bridge forces `soar stop-phase input` and `trace 0`. Other settings can

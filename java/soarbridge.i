@@ -25,7 +25,20 @@
 %ignore soarbridge::CommandHandler;
 %ignore soarbridge::SoarHardwareInterface::DispatchCommands;
 
+// Generic commands are copied into frc.soar.SoarCommand by name, so the
+// params map itself is not wrapped; Command.paramNames()/getParam() reach it.
+%ignore soarbridge::Command::params;
+// Constants named Float/String would shadow java.lang inside the enum.
+%rename(INT) soarbridge::ValueType::Int;
+%rename(FLOAT) soarbridge::ValueType::Float;
+%rename(STRING) soarbridge::ValueType::String;
+%ignore soarbridge::Value::AsNumber;
+%ignore soarbridge::Value::AsBool;
+%ignore soarbridge::Value::operator==;
+%ignore soarbridge::Value::operator!=;
+
 %template(CommandVector) std::vector<soarbridge::Command>;
+%template(StringVector) std::vector<std::string>;
 
 %include "soarbridge/RobotIO.h"
 %include "soarbridge/SoarHardwareInterface.h"

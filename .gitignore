@@ -1,9 +1,2 @@
-# WPILib installer archives (multi-GB)
-WPILib_*.tar.gz
-WPILib_*.zip
-
-# Soar is its own git checkout (https://github.com/SoarGroup/Soar)
-/Soar/
-
-# In-tree build output, if SOARBRIDGE_BUILD_DIR points here
-/build/
+WPILib_Linux-x64-2027.0.0-alpha-8.tar.gz
+Soar

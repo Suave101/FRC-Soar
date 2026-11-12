@@ -30,6 +30,15 @@ class PyCommandHandler : public CommandHandler {
   }
 };
 
+py::object ToPython(const Value& v) {
+  switch (v.type) {
+    case ValueType::Int:   return py::int_(v.intValue);
+    case ValueType::Float: return py::float_(v.floatValue);
+    case ValueType::String: break;
+  }
+  return py::str(v.stringValue);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(soarbridge, m) {
@@ -50,7 +59,8 @@ PYBIND11_MODULE(soarbridge, m) {
       .value("TURN_TO", CommandType::TurnTo)
       .value("SET_ELEVATOR", CommandType::SetElevator)
       .value("RUN_INTAKE", CommandType::RunIntake)
-      .value("SHOOT", CommandType::Shoot);
+      .value("SHOOT", CommandType::Shoot)
+      .value("CUSTOM", CommandType::Custom);
 
   py::class_<RobotInputs>(m, "RobotInputs", "Snapshot written to the Soar input-link")
       .def(py::init<>())
@@ -68,9 +78,28 @@ PYBIND11_MODULE(soarbridge, m) {
       .def_readwrite("has_piece", &RobotInputs::hasPiece)
       .def_readwrite("elevator_height", &RobotInputs::elevatorHeight);
 
-  py::class_<Command>(m, "Command", "One command read from the Soar output-link")
+  py::class_<Command>(m, "Command",
+      "One command read from the Soar output-link. `params` maps each parameter "
+      "(nested ones as dotted keys) to an int, float or str")
       .def_readonly("type", &Command::type)
       .def_readonly("id", &Command::id)
+      .def_readonly("name", &Command::name)
+      .def_property_readonly("params",
+           [](const Command& c) {
+             py::dict d;
+             for (const auto& p : c.params) d[py::str(p.first)] = ToPython(p.second);
+             return d;
+           })
+      .def("has", &Command::Has, py::arg("key"))
+      .def("get_number", &Command::GetNumber, py::arg("key"), py::arg("default") = 0.0)
+      .def("get_string", &Command::GetString, py::arg("key"), py::arg("default") = "")
+      .def("get_bool", &Command::GetBool, py::arg("key"), py::arg("default") = false)
+      .def("__repr__",
+           [](const Command& c) {
+             std::string s = "<Command ^" + c.name;
+             for (const auto& p : c.params) s += " ^" + p.first + " " + p.second.ToString();
+             return s + ">";
+           })
       .def_readonly("vx", &Command::vx)
       .def_readonly("vy", &Command::vy)
       .def_readonly("omega", &Command::omega)
@@ -87,11 +116,14 @@ PYBIND11_MODULE(soarbridge, m) {
       .def_readonly("inputs_submitted", &BridgeStats::inputsSubmitted)
       .def_readonly("inputs_processed", &BridgeStats::inputsProcessed)
       .def_readonly("inputs_overwritten", &BridgeStats::inputsOverwritten)
+      .def_readonly("input_errors", &BridgeStats::inputErrors)
       .def_readonly("decision_cycles", &BridgeStats::decisionCycles)
       .def_readonly("commands_received", &BridgeStats::commandsReceived)
       .def_readonly("commands_rejected", &BridgeStats::commandsRejected)
       .def_readonly("commands_dropped", &BridgeStats::commandsDropped)
+      .def_readonly("commands_unhandled", &BridgeStats::commandsUnhandled)
       .def_readonly("commands_completed", &BridgeStats::commandsCompleted)
+      .def_readonly("output_constants_ignored", &BridgeStats::outputConstantsIgnored)
       .def_readonly("last_latency_micros", &BridgeStats::lastLatencyMicros)
       .def_readonly("max_latency_micros", &BridgeStats::maxLatencyMicros)
       .def_readonly("mean_latency_micros", &BridgeStats::meanLatencyMicros)
@@ -129,12 +161,37 @@ PYBIND11_MODULE(soarbridge, m) {
              self.Stop();
            })
       .def("is_running", &SoarHardwareInterface::IsRunning)
-      .def("set_inputs", &SoarHardwareInterface::SetInputs)
+      .def("set_inputs", &SoarHardwareInterface::SetInputs,
+           "Write a RobotInputs snapshot to its fixed paths, then send_inputs()")
+      .def("set_number", &SoarHardwareInterface::SetNumber, py::arg("path"), py::arg("value"),
+           "Stage a float WME at a dotted input-link path; False if the path is refused")
+      .def("set_int", &SoarHardwareInterface::SetInt, py::arg("path"), py::arg("value"))
+      .def("set_string", &SoarHardwareInterface::SetString, py::arg("path"), py::arg("value"))
+      .def("set_bool", &SoarHardwareInterface::SetBool, py::arg("path"), py::arg("value"))
+      .def("remove_input", &SoarHardwareInterface::RemoveInput, py::arg("path"))
+      .def("send_inputs", &SoarHardwareInterface::SendInputs,
+           "Publish the values staged since the last call as one snapshot")
+      .def("accept_command", &SoarHardwareInterface::AcceptCommand, py::arg("name"))
+      .def("on_command",
+           [](SoarHardwareInterface& self, const std::string& name, py::function fn) {
+             // dispatch_commands() runs with the GIL held, so calling fn is safe.
+             return self.OnCommand(name, [fn](const Command& c) { fn(c); });
+           },
+           py::arg("name"), py::arg("handler"),
+           "Accept commands named `name` and call handler(command) for each in dispatch_commands()")
       .def("poll_commands", &SoarHardwareInterface::PollCommands)
       .def("complete_command", &SoarHardwareInterface::CompleteCommand,
            py::arg("command_id"), py::arg("success") = true)
-      .def("dispatch_commands", &SoarHardwareInterface::DispatchCommands)
+      .def("reject_command", &SoarHardwareInterface::RejectCommand,
+           py::arg("command_id"), py::arg("reason"))
+      .def("dispatch_commands",
+           [](SoarHardwareInterface& self, CommandHandler* handler) {
+             return handler ? self.DispatchCommands(*handler) : self.DispatchCommands();
+           },
+           py::arg("handler") = py::none(),
+           "Run on_command handlers (and, for built-in commands, `handler`) for every new command")
       .def("get_stats", &SoarHardwareInterface::GetStats)
+      .def("get_last_warning", &SoarHardwareInterface::GetLastWarning)
       .def("__enter__",
            [](py::object self) {
              self.attr("start")();

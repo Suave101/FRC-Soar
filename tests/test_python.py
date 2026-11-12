@@ -1,4 +1,4 @@
-"""Exercises the Python module end to end. Usage: test_python.py <agents dir>"""
+"""Exercises the Python module end to end. Usage: test_python.py <agents dir> <tests dir>"""
 import sys
 import time
 
@@ -38,7 +38,8 @@ class Recorder(soarbridge.CommandHandler):
         self.shots += 1
 
 
-def main(agents):
+def main(agents, tests=None):
+    tests = tests or agents + "/../tests"
     try:
         SoarHardwareInterface(productions_path="/nonexistent/agent.soar").start()
         check(False, "start() raises for a missing productions file")
@@ -95,9 +96,68 @@ def main(agents):
         print("  latency: mean %.1f us, max %.1f us" % (stats.mean_latency_micros, stats.max_latency_micros))
 
     check(not soar.is_running(), "stopped after the with block")
+    generic(tests)
     print("PASSED" if not failures else "FAILED (%d)" % failures)
     return 1 if failures else 0
 
 
+def generic(tests):
+    """Path inputs and named commands against tests/generic_io.soar."""
+    with SoarHardwareInterface(productions_path=tests + "/generic_io.soar") as soar:
+        check(not soar.set_number("a..b", 1.0), "invalid path refused")
+        check(soar.get_last_warning() != "", "refused path is reported")
+
+        reports = []
+        soar.on_command("report", reports.append)
+        for name in ("beam", "angle", "has-piece", "no-vision"):
+            check(soar.accept_command(name), "accept " + name)
+
+        check(soar.set_string("match.mode", "teleop"), "set_string")
+        check(soar.set_int("ground-intake.beam-break", 1), "set_int")
+        check(soar.set_bool("ground-intake.has-piece", True), "set_bool")
+        check(soar.set_number("arm.angle", 30.5), "set_number")
+        check(not soar.set_number("arm.angle.x", 1.0), "child of a value refused")
+        check(soar.set_int("test.seq", 1), "set seq")
+        for _ in range(50):
+            soar.send_inputs()
+            time.sleep(0.002)
+            soar.dispatch_commands()  # beam, angle, ... have no handler -> unhandled
+            if reports:
+                break
+        check(len(reports) == 1, "one report, got %d" % len(reports))
+        if reports:
+            r = reports[0]
+            check(r.name == "report" and r.type == CommandType.CUSTOM, "custom command named report")
+            check(r.params == {"seq": 1, "mode": "teleop", "target.x": 1.5, "target.y": -2},
+                  "report params %r" % r.params)
+            check(isinstance(r.params["seq"], int), "Soar int -> Python int")
+            check(r.get_number("target.x") == 1.5 and r.get_string("mode") == "teleop", "accessors")
+
+        # Polling by hand: the next burst, with ^arm removed.
+        soar.remove_input("arm")
+        soar.set_int("test.seq", 2)
+        got = []
+        for _ in range(50):
+            soar.send_inputs()
+            time.sleep(0.002)
+            for c in soar.poll_commands():
+                got.append(c)
+                soar.complete_command(c.id)
+            if any(c.name == "report" for c in got):
+                break
+        names = sorted(c.name for c in got)
+        check("angle" not in names and "beam" in names, "arm removed, beam kept: %s" % names)
+        beam = [c for c in got if c.name == "beam"]
+        if beam:
+            check(beam[0].params["value"] == 1, "beam value")
+
+        stats = soar.get_stats()
+        check(stats.commands_rejected == 2, "mystery + dup rejected, got %d" % stats.commands_rejected)
+        check(stats.output_constants_ignored == 1,
+              "^legacy constant counted once, got %d" % stats.output_constants_ignored)
+        check(stats.commands_unhandled >= 1, "accepted-but-unhandled counted")
+        check(stats.input_errors == 2, "two refused paths, got %d" % stats.input_errors)
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(*sys.argv[1:3]))

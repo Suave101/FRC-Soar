@@ -1,0 +1,124 @@
+# Test agent for the generic (path-based) I/O layer. It uses no fixed schema.
+#
+# Each new value of ^test.seq produces one burst of commands describing what
+# the agent sees on the input-link:
+#   ^report    ^seq, ^mode (from ^match.mode), ^target.x 1.5, ^target.y -2
+#   ^beam      ^seq, ^value (from ^ground-intake.beam-break)       if present
+#   ^angle     ^seq, ^value (from ^arm.angle)                      if present
+#   ^has-piece ^seq                                  if ^ground-intake.has-piece true
+#   ^no-vision ^seq                                  if there is no ^vision
+# and for seq 1 only, three things the bridge must refuse:
+#   ^mystery <c>     a name the robot never registered      -> ^status error
+#   ^dup <c>         a parameter given twice               -> ^status error
+#   ^legacy closed   a constant, not a command identifier  -> counted, warned
+#
+# With ^test.ping true it keeps one ^ping-a and one ^ping-b command on the
+# output-link, re-issuing either once it is gone. That makes commands the
+# bridge drops (and must mark ^status error) visible: they are re-issued.
+
+sp {gen*propose*clear-commands
+   (state <s> ^superstate nil ^io.output-link <ol>)
+   (<ol> ^<name> <cmd>)
+   (<cmd> ^status)
+-->
+   (<s> ^operator <o> + > =)
+   (<o> ^name clear-commands)}
+
+sp {gen*apply*clear-commands
+   (state <s> ^operator.name clear-commands ^io.output-link <ol>)
+   (<ol> ^<name> <cmd>)
+   (<cmd> ^status)
+-->
+   (<ol> ^<name> <cmd> -)}
+
+sp {gen*propose*report
+   (state <s> ^superstate nil ^io.input-link.test.seq <n>)
+  -(<s> ^reported <n>)
+-->
+   (<s> ^operator <o> + =)
+   (<o> ^name report ^seq <n>)}
+
+sp {gen*apply*report
+   (state <s> ^operator <o> ^io <io>)
+   (<o> ^name report ^seq <n>)
+   (<io> ^input-link.match.mode <m> ^output-link <ol>)
+-->
+   (<s> ^reported <n>)
+   (<ol> ^report <r>)
+   (<r> ^seq <n> ^mode <m> ^target <t>)
+   (<t> ^x 1.5 ^y -2)}
+
+sp {gen*apply*report*beam
+   (state <s> ^operator <o> ^io <io>)
+   (<o> ^name report ^seq <n>)
+   (<io> ^input-link.ground-intake.beam-break <b> ^output-link <ol>)
+-->
+   (<ol> ^beam <c>)
+   (<c> ^seq <n> ^value <b>)}
+
+sp {gen*apply*report*angle
+   (state <s> ^operator <o> ^io <io>)
+   (<o> ^name report ^seq <n>)
+   (<io> ^input-link.arm.angle <a> ^output-link <ol>)
+-->
+   (<ol> ^angle <c>)
+   (<c> ^seq <n> ^value <a>)}
+
+sp {gen*apply*report*has-piece
+   (state <s> ^operator <o> ^io <io>)
+   (<o> ^name report ^seq <n>)
+   (<io> ^input-link.ground-intake.has-piece true ^output-link <ol>)
+-->
+   (<ol> ^has-piece <c>)
+   (<c> ^seq <n>)}
+
+sp {gen*apply*report*no-vision
+   (state <s> ^operator <o> ^io <io>)
+   (<o> ^name report ^seq <n>)
+   (<io> ^input-link <il> ^output-link <ol>)
+  -(<il> ^vision)
+-->
+   (<ol> ^no-vision <c>)
+   (<c> ^seq <n>)}
+
+sp {gen*apply*report*refused
+   (state <s> ^operator <o> ^io.output-link <ol>)
+   (<o> ^name report ^seq 1)
+-->
+   (<ol> ^mystery <m> ^dup <d> ^legacy closed)
+   (<m> ^seq 1)
+   (<d> ^seq 1 ^v 1 ^v 2)}
+
+sp {gen*propose*ping-a
+   (state <s> ^superstate nil ^io <io>)
+   (<io> ^input-link.test.ping true ^output-link <ol>)
+  -(<ol> ^ping-a)
+-->
+   (<s> ^operator <o> + =)
+   (<o> ^name ping-a)}
+
+sp {gen*apply*ping-a
+   (state <s> ^operator.name ping-a ^io.output-link <ol>)
+-->
+   (<ol> ^ping-a <p>)
+   (<p> ^n 1)}
+
+sp {gen*propose*ping-b
+   (state <s> ^superstate nil ^io <io>)
+   (<io> ^input-link.test.ping true ^output-link <ol>)
+  -(<ol> ^ping-b)
+-->
+   (<s> ^operator <o> + =)
+   (<o> ^name ping-b)}
+
+sp {gen*apply*ping-b
+   (state <s> ^operator.name ping-b ^io.output-link <ol>)
+-->
+   (<ol> ^ping-b <p>)
+   (<p> ^n 1)}
+
+sp {gen*propose*wait
+   (state <s> ^attribute state ^choices none -^operator.name wait)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name wait)}

@@ -113,6 +113,15 @@ static void TestMapping(const std::string& agents) {
     CHECK(std::fabs(move->omega + 0.3) < 1e-9);
   }
   if (intake) CHECK(std::fabs(intake->speed - 1.0) < 1e-9);
+  if (move) {
+    // The typed fields sit on top of the generic name/params.
+    CHECK(move->name == "move");
+    CHECK(move->params.size() == 3);
+    CHECK(std::fabs(move->GetNumber("vx") - 1.0) < 1e-9);
+  }
+  // The typed layer owns ^match.* as a parent, so a value there is refused.
+  CHECK(!soar.SetNumber("match", 1.0));
+  CHECK(soar.GetStats().inputErrors == 1);
 
   // Until completed, the command stays on the output-link and is not reissued.
   for (int i = 0; i < 5; ++i) CHECK(Tick(soar, in).empty());
@@ -153,6 +162,9 @@ static void TestBadCommands(const std::string& tests) {
     std::vector<Command> c = Tick(soar, RobotInputs());
     all.insert(all.end(), c.begin(), c.end());
   }
+  BridgeStats s0 = soar.GetStats();
+  std::printf("  %zu commands, %lld received, %lld rejected; %s\n", all.size(), s0.commandsReceived,
+              s0.commandsRejected, soar.GetLastWarning().c_str());
   CHECK(all.size() == 1);
   if (!all.empty()) {
     CHECK(all[0].type == CommandType::SetElevator);
@@ -161,6 +173,194 @@ static void TestBadCommands(const std::string& tests) {
   BridgeStats s = soar.GetStats();
   CHECK(s.commandsReceived == 1);
   CHECK(s.commandsRejected == 2);
+}
+
+// --- Generic (path-based) I/O, against tests/generic_io.soar ---------------
+
+// Sends the staged inputs and returns the commands produced, waiting at most 1 s.
+static std::vector<Command> Send(SoarHardwareInterface& soar) {
+  long long target = soar.GetStats().inputsProcessed + 1;
+  soar.SendInputs();
+  for (int i = 0; i < 1000 && soar.GetStats().inputsProcessed < target; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return soar.PollCommands();
+}
+
+static const Command* Named(const std::vector<Command>& cmds, const std::string& name, long long seq) {
+  for (const Command& c : cmds) {
+    Value s = c.GetParam("seq");
+    if (c.name == name && s.type == ValueType::Int && s.intValue == seq) return &c;
+  }
+  return nullptr;
+}
+
+// Sets ^test.seq and ticks until the agent's ^report for it arrives,
+// completing every command on the way. Returns all of them.
+static std::vector<Command> Burst(SoarHardwareInterface& soar, long long seq) {
+  CHECK(soar.SetInt("test.seq", seq));
+  std::vector<Command> all;
+  for (int i = 0; i < 10 && Named(all, "report", seq) == nullptr; ++i) {
+    for (const Command& c : Send(soar)) {
+      soar.CompleteCommand(c.id);
+      all.push_back(c);
+    }
+  }
+  CHECK(Named(all, "report", seq) != nullptr);
+  return all;
+}
+
+static void TestGenericIO(const std::string& tests) {
+  std::printf("generic io\n");
+  BridgeConfig cfg;
+  cfg.productionsPath = tests + "/generic_io.soar";
+  SoarHardwareInterface soar(cfg);
+
+  // Path syntax is checked on the robot thread, even before Start().
+  for (const char* bad : {"", "a..b", "^a", "a b", "1a", "a.", ".a", "a.b|c"}) {
+    CHECK(!soar.SetNumber(bad, 1.0));
+  }
+  CHECK(soar.GetStats().inputErrors == 8);
+  CHECK(!soar.GetLastWarning().empty());
+
+  CHECK(soar.Start());
+  for (const char* name : {"report", "beam", "angle", "has-piece", "no-vision"}) {
+    CHECK(soar.AcceptCommand(name));
+  }
+  CHECK(!soar.AcceptCommand("ground-intake.state"));  // one segment only
+
+  CHECK(soar.SetString("match.mode", "teleop"));
+  CHECK(soar.SetInt("ground-intake.beam-break", 1));
+  CHECK(soar.SetBool("ground-intake.has-piece", true));
+  CHECK(soar.SetNumber("arm.angle", 30.5));
+  CHECK(!soar.SetNumber("arm.angle.x", 1.0));    // arm.angle is a value
+  CHECK(!soar.SetNumber("ground-intake", 1.0));  // has values under it
+  CHECK(soar.GetStats().inputErrors == 2);
+
+  std::vector<Command> b = Burst(soar, 1);
+  const Command* report = Named(b, "report", 1);
+  if (report) {
+    CHECK(report->type == CommandType::Custom);
+    CHECK(report->params.size() == 4);  // seq, mode, target.x, target.y
+    CHECK(report->GetString("mode") == "teleop");
+    CHECK(report->GetParam("target.x").type == ValueType::Float);
+    CHECK(std::fabs(report->GetNumber("target.x") - 1.5) < 1e-9);
+    CHECK(report->GetParam("target.y").type == ValueType::Int);
+    CHECK(report->GetParam("target.y").intValue == -2);
+    CHECK(!report->Has("status"));
+  }
+  const Command* beam = Named(b, "beam", 1);
+  CHECK(beam != nullptr);
+  if (beam) {
+    CHECK(beam->GetParam("value").type == ValueType::Int);  // SetInt -> int WME
+    CHECK(beam->GetParam("value").intValue == 1);
+  }
+  const Command* angle = Named(b, "angle", 1);
+  CHECK(angle != nullptr);
+  if (angle) {
+    CHECK(angle->GetParam("value").type == ValueType::Float);
+    CHECK(std::fabs(angle->GetNumber("value") - 30.5) < 1e-9);
+  }
+  CHECK(Named(b, "has-piece", 1) != nullptr);  // SetBool -> "true"
+  CHECK(Named(b, "no-vision", 1) != nullptr);
+  CHECK(Named(b, "mystery", 1) == nullptr);
+  CHECK(Named(b, "dup", 1) == nullptr);
+  BridgeStats s = soar.GetStats();
+  CHECK(s.commandsRejected == 2);         // ^mystery (unregistered), ^dup (two ^v)
+  CHECK(s.outputConstantsIgnored == 1);   // ^legacy closed
+  std::printf("  last warning: %s\n", soar.GetLastWarning().c_str());
+
+  // A subtree appears, another is removed, values change.
+  CHECK(soar.SetNumber("vision.distance", 2.0));
+  CHECK(soar.RemoveInput("arm"));
+  CHECK(soar.SetInt("ground-intake.beam-break", 0));
+  CHECK(soar.SetBool("ground-intake.has-piece", false));
+  b = Burst(soar, 2);
+  CHECK(Named(b, "no-vision", 2) == nullptr);
+  CHECK(Named(b, "angle", 2) == nullptr);
+  CHECK(Named(b, "has-piece", 2) == nullptr);
+  beam = Named(b, "beam", 2);
+  CHECK(beam != nullptr);
+  if (beam) CHECK(beam->GetParam("value").intValue == 0);
+
+  // Removed parent; a removed path comes back with a different type.
+  CHECK(soar.RemoveInput("vision"));
+  CHECK(soar.SetString("arm.angle", "up"));
+  b = Burst(soar, 3);
+  CHECK(Named(b, "no-vision", 3) != nullptr);
+  angle = Named(b, "angle", 3);
+  CHECK(angle != nullptr);
+  if (angle) CHECK(angle->GetParam("value").type == ValueType::String && angle->GetString("value") == "up");
+
+  // Type change on a live path (string -> float).
+  CHECK(soar.SetNumber("arm.angle", -5.0));
+  b = Burst(soar, 4);
+  angle = Named(b, "angle", 4);
+  CHECK(angle != nullptr);
+  if (angle) CHECK(angle->GetParam("value").type == ValueType::Float && angle->GetNumber("value") == -5.0);
+
+  // A parent becomes a value within one snapshot.
+  CHECK(soar.RemoveInput("arm"));
+  CHECK(soar.SetNumber("arm", 3.0));
+  b = Burst(soar, 5);
+  CHECK(Named(b, "angle", 5) == nullptr);
+
+  // A restart re-sends every known value to the new kernel.
+  soar.Stop();
+  CHECK(soar.Start());
+  b = Burst(soar, 6);
+  report = Named(b, "report", 6);
+  if (report) CHECK(report->GetString("mode") == "teleop");
+  CHECK(Named(b, "beam", 6) != nullptr);  // AcceptCommand survives a restart
+
+  // Handlers by name; an accepted command with no handler gets ^status error.
+  int reports = 0;
+  std::string mode;
+  CHECK(soar.OnCommand("report", [&](const Command& c) {
+    ++reports;
+    mode = c.GetString("mode");
+  }));
+  CHECK(soar.SetInt("test.seq", 7));
+  for (int i = 0; i < 20 && reports == 0; ++i) {
+    soar.SendInputs();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    soar.DispatchCommands();
+  }
+  CHECK(reports == 1);
+  CHECK(mode == "teleop");
+  s = soar.GetStats();
+  CHECK(s.commandsUnhandled >= 1);  // ^beam: accepted but no handler
+  CHECK(s.commandsRejected == 0);   // seq 7 issues nothing the bridge refuses
+  std::printf("  unhandled: %lld, warning: %s\n", s.commandsUnhandled, soar.GetLastWarning().c_str());
+}
+
+// Commands dropped past maxPendingCommands get ^status error, so the agent
+// can clear and re-issue them instead of waiting on them forever.
+static void TestDropped(const std::string& tests) {
+  std::printf("dropped commands\n");
+  BridgeConfig cfg;
+  cfg.productionsPath = tests + "/generic_io.soar";
+  cfg.maxPendingCommands = 1;
+  SoarHardwareInterface soar(cfg);
+  CHECK(soar.Start());
+  CHECK(soar.AcceptCommand("ping-a"));
+  CHECK(soar.AcceptCommand("ping-b"));
+  CHECK(soar.SetBool("test.ping", true));
+  for (int i = 0; i < 12; ++i) {
+    long long target = soar.GetStats().inputsProcessed + 1;
+    soar.SendInputs();  // never polled
+    for (int w = 0; w < 1000 && soar.GetStats().inputsProcessed < target; ++w) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  BridgeStats s = soar.GetStats();
+  std::printf("  12 loops without polling: %lld received, %lld dropped\n",
+              s.commandsReceived, s.commandsDropped);
+  // Without the error status the agent would be stuck at 2 received, 1 dropped.
+  CHECK(s.commandsReceived >= 4);
+  CHECK(s.commandsDropped >= 3);
+  CHECK(soar.PollCommands().size() <= 1);
+  CHECK(soar.GetLastWarning().find("dropped") != std::string::npos);
 }
 
 static void TestRestart(const std::string& agents) {
@@ -207,7 +407,8 @@ static void TestMatch(const std::string& agents, bool realtime) {
   Recorder rec;
   RobotInputs in;
   in.alliance = Alliance::Red;
-  double worstCallMicros = 0;
+  double worstCallMicros = 0, worstSetMicros = 0, worstDispatchMicros = 0;
+  double totalSetMicros = 0, totalDispatchMicros = 0;
   long rssWarm = 0;
   auto next = Clock::now();
 
@@ -235,6 +436,10 @@ static void TestMatch(const std::string& agents, bool realtime) {
     soar.DispatchCommands(rec);
     auto d = Clock::now();
     worstCallMicros = std::max({worstCallMicros, Micros(b - a), Micros(d - c)});
+    worstSetMicros = std::max(worstSetMicros, Micros(b - a));
+    worstDispatchMicros = std::max(worstDispatchMicros, Micros(d - c));
+    totalSetMicros += Micros(b - a);
+    totalDispatchMicros += Micros(d - c);
 
     if (tick == 1500) rssWarm = RssKb();  // after 30 s, caches are populated
     next += period;
@@ -254,7 +459,10 @@ static void TestMatch(const std::string& agents, bool realtime) {
   std::printf("  handler calls: move=%d intake=%d shoot=%d\n", rec.moves, rec.intakes, rec.shots);
   std::printf("  input->command latency: mean %.1f us, max %.1f us\n",
               s.meanLatencyMicros, s.maxLatencyMicros);
-  std::printf("  worst robot-thread call: %.1f us\n", worstCallMicros);
+  std::printf("  worst robot-thread call: %.1f us (SetInputs %.1f, DispatchCommands %.1f)\n",
+              worstCallMicros, worstSetMicros, worstDispatchMicros);
+  std::printf("  mean robot-thread call: SetInputs %.2f us, DispatchCommands %.2f us\n",
+              totalSetMicros / kTicks, totalDispatchMicros / kTicks);
   std::printf("  RSS: %ld kB at 30 s -> %ld kB at end (%+ld kB)\n", rssWarm, rssEnd, rssEnd - rssWarm);
 
   CHECK(s.inputsSubmitted == kTicks);
@@ -287,6 +495,8 @@ int main(int argc, char** argv) {
   TestStartFailure();
   TestMapping(agents);
   TestBadCommands(tests);
+  TestGenericIO(tests);
+  TestDropped(tests);
   TestRestart(agents);
   TestMatch(agents, realtime);
 
